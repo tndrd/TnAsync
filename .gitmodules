@@ -1,3 +1,6 @@
 [submodule "Deps/TnStatus"]
 	path = Deps/TnStatus
 	url = https://github.com/tndrd/TnStatus.git
+[submodule "Deps/googletest"]
+	path = Deps/googletest
+	url = https://github.com/google/googletest.git

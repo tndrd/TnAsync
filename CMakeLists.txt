@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.0)
 project(ThreadPool C CXX)
 
 include_directories(Inc/)
-find_package(GTest)
 
 add_subdirectory(Deps/TnStatus)
+add_subdirectory(Deps/googletest)
 
 add_library(Worker Src/Worker/Worker.c)
 target_link_libraries(Worker PUBLIC pthread TnStatus)
