@@ -3,8 +3,21 @@ project(ThreadPool C CXX)
 
 include_directories(Inc/)
 
-add_subdirectory(Deps/TnStatus)
-add_subdirectory(Deps/googletest)
+include(FetchContent)
+
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG        main
+)
+
+FetchContent_Declare(
+  TnStatus
+  GIT_REPOSITORY https://github.com/tndrd/TnStatus.git
+  GIT_TAG        master
+)
+
+FetchContent_MakeAvailable(googletest TnStatus)
 
 add_library(Worker Src/Worker/Worker.c)
 target_link_libraries(Worker PUBLIC pthread TnStatus)
