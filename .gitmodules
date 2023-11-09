@@ -1,0 +1,3 @@
+[submodule "Deps/TnStatus"]
+	path = Deps/TnStatus
+	url = https://github.com/tndrd/TnStatus.git
