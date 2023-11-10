@@ -23,7 +23,7 @@ TEST(Worker, Init) {
   WorkerCallbackT callback;
   callback.Function = DummyCallbackFoo;
 
-  CALL(WorkerRun(&worker, callback));
+  CALL(WorkerRun(&worker, &callback));
   CALL(WorkerStop(&worker));
   CALL(WorkerDestroy(&worker));
 }
@@ -37,7 +37,7 @@ TEST(Worker, Callback) {
   callback.Args = &arg;
   callback.Function = Callback;
 
-  CALL(WorkerRun(&worker, callback));
+  CALL(WorkerRun(&worker, &callback));
   sleep(1);
   CALL(WorkerStop(&worker));
   CALL(WorkerDestroy(&worker));
@@ -66,25 +66,21 @@ TEST(Worker, SyncTaskChain) {
   task.Result = &res;
   task.Function = Pow;
 
-  CALL(WorkerRun(&worker, callback));
+  CALL(WorkerRun(&worker, &callback));
 
   int nRepeats = 5;
   for (int i = 0; i < nRepeats; ++i) {
-    while (worker.State != WORKER_FREE)
-      ;
-
     arg = i;
     res = 0;
     done = 0;
 
     CALL(WorkerAssignTask(&worker, task));
-    while (worker.State != WORKER_DONE)
-      ;
+    CALL(WorkerWaitTask(&worker));
 
     ASSERT_EQ(done, 1);
     ASSERT_EQ(res, i * i);
 
-    CALL(WorkerFinish(&worker));
+    CALL(WorkerFinishTask(&worker));
   }
 
   CALL(WorkerStop(&worker));
@@ -101,16 +97,16 @@ void WorkerChainTaskCallback(Worker* worker, void* args) {
   static int i = 0;
   WorkerTask* task = (WorkerTask*)(args);
 
-  if (worker->State == WORKER_FREE) {
+  if (worker->State == WORKER_READY) {
     int* arg = (int*)(task->Args);
     *arg = i;
-    WorkerAssignTask(worker, *task);
+    CALL(WorkerAssignTaskAsync(worker, *task));
   }
 
   if (worker->State == WORKER_DONE) {
     int* result = (int*)(task->Result);
     TestBuf[i] = *result;
-    WorkerFinish(worker);
+    CALL(WorkerFinishTaskAsync(worker));
 
     ASSERT_EQ(*result, i * i);
     i++;
@@ -134,7 +130,7 @@ TEST(Worker, AsyncTaskChain) {
   callback.Args = &task;
   callback.Function = WorkerChainTaskCallback;
 
-  CALL(WorkerRun(&worker, callback));
+  CALL(WorkerRun(&worker, &callback));
   while (!DoStop)
     ;
   CALL(WorkerStop(&worker));

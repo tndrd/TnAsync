@@ -65,7 +65,7 @@ TnStatus WorkerArrayRun(WorkerArray* workers, WorkerCallbackT callback) {
     status = WorkerArrayGet(workers, i, &worker);
     assert(TnStatusOk(status));
 
-    status = WorkerRun(worker, callback);
+    status = WorkerRun(worker, &callback);
     if (!TnStatusOk(status)) break;
   }
 

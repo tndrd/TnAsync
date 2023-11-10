@@ -9,29 +9,21 @@ static void WorkerCallback(Worker *worker, void *args) {
   TnStatus status;
   WorkerTask task;
 
-  if (state == WORKER_FREE) {
-    // Worker is free, try to get new task
+  if (state == WORKER_READY) {
     status = TQMonitorGetTask(&tp->Tasks, &task);
     TnStatusCode code = status.Code;
 
     if (code == TN_SUCCESS) {
-      // Task available, assign
-      status = WorkerAssignTask(worker, task);
-      // assert(status == STATUS_SUCCESS);
+      status = WorkerAssignTaskAsync(worker, task);
+      assert(TnStatusOk(status));
     } else if (code == TN_UNDERFLOW) {
-      // No availble tasks, wait for new ones
       status = WQMonitorAddWorker(&tp->FreeWorkers, &worker->ID);
-      // assert(status == STATUS_SUCCESS);
+      assert(TnStatusOk(status));
     } else
       assert(0);
   } else if (state == WORKER_DONE) {
-    // Worker has finished, so we can let it continue
-    status = WorkerFinish(worker);
-    // assert(status == STATUS_SUCCESS);
-  } else if (state == WORKER_BUSY) {
-    // Worker is starting to work on task, do nothing
-  } else {
-    assert(0);  // Placeholder for error handling
+    status = WorkerFinishTaskAsync(worker);
+    assert(TnStatusOk(status));
   }
 }
 
@@ -98,9 +90,11 @@ TnStatus ThreadPoolAddTask(ThreadPool *tp, WorkerTask task) {
 
   if (code == TN_SUCCESS) {  // Has free worker, assign task
     status = WorkerArrayGet(&tp->Workers, workerID, &worker);
+    assert(TnStatusOk(status));
     if (!TnStatusOk(status)) return status;
 
     status = WorkerAssignTask(worker, task);
+
     if (!TnStatusOk(status)) {  // Failed to assign
       assert(TnStatusOk(WQMonitorAddWorker(&tp->FreeWorkers, &workerID)));
     }
@@ -109,7 +103,7 @@ TnStatus ThreadPoolAddTask(ThreadPool *tp, WorkerTask task) {
     if (!TnStatusOk(status)) {  // Failed to assign
       assert(TnStatusOk(WQMonitorAddWorker(&tp->FreeWorkers, &workerID)));
     }
-  }
+  } else assert(0);
 
   return status;
 }
