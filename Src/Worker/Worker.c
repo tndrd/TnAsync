@@ -1,181 +1,275 @@
 #include "Worker/Worker.h"
 
 /* Main */
-TnStatus WorkerInit(Worker* worker, WorkerID id) {
-  assert(worker);
-  worker->ID = id;
+TnStatus WorkerInit(Worker* self, WorkerID id) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
 
-  pthread_mutex_init(&worker->Mutex, NULL);
-  pthread_cond_init(&worker->Cond, NULL);
+  self->ID = id;
 
-  return TN_OK;
-}
-
-/* Main */
-TnStatus WorkerDestroy(Worker* worker) {
-  pthread_mutex_destroy(&worker->Mutex);
-  pthread_cond_destroy(&worker->Cond);
+  pthread_mutex_init(&self->Mutex, NULL);
+  pthread_cond_init(&self->Cond, NULL);
 
   return TN_OK;
 }
 
 /* Main */
-TnStatus WorkerRun(Worker* worker, WorkerCallbackT callback) {
-  assert(worker);
-  assert(callback.Args);
-  assert(callback.Function);
+TnStatus WorkerDestroy(Worker* self) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
 
-  worker->State = WORKER_FREE;
-  worker->Callback = callback;
-  worker->Active = 1;
-  worker->HasTask = 0;
-  worker->ResultBeenRead = 0;
+  WorkerStop(self);
 
-  int result = pthread_create(&worker->Thread, NULL, WorkerLoop, worker);
+  pthread_mutex_destroy(&self->Mutex);
+  pthread_cond_destroy(&self->Cond);
 
-  if (result != 0) {
-    errno = result;
+  return TN_OK;
+}
+
+/* Main */
+TnStatus WorkerRun(Worker* self, WorkerCallbackT* stateCb) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
+
+  self->State = WORKER_STARTED;
+  self->DoStop = 0;
+  self->DoReset = 0;
+  self->DoStart = 0;
+  self->NTask = 0;
+
+  self->StateCallback.Args = (stateCb) ? stateCb->Args : NULL;
+  self->StateCallback.Function = (stateCb) ? stateCb->Function : NULL;
+
+  int res = pthread_create(&self->Thread, NULL, WorkerLoop, self);
+  if (res != 0) {
+    errno = res;
     return TNSTATUS(TN_ERRNO);
   }
 
   return TN_OK;
 }
 
-/* Thread */
-static void WorkerSleep(Worker* worker) {
-  assert(worker);
-  pthread_cond_wait(&worker->Cond, &worker->Mutex);
+TnStatus WorkerAssignTask(Worker* self, WorkerTask task) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
+  TnStatus status;
+
+  WorkerLock(self);
+
+  if (self->State == WORKER_STARTED) WorkerSleepUntilStateChanges(self);
+
+  status = WorkerAssignTaskAsync(self, task);
+  if (!TnStatusOk(status)) {
+    WorkerUnlock(self);
+    return status;
+  }
+
+  size_t nTask = self->NTask;
+
+  WorkerWakeUp(self);
+  WorkerSleepUntilStateChanges(self);
+
+  status = TN_OK;
+
+  WorkerUnlock(self);
+  return status;
 }
 
-/* Main */
-static void WorkerWakeUp(Worker* worker) {
-  assert(worker);
-  pthread_cond_signal(&worker->Cond);
-  pthread_mutex_unlock(&worker->Mutex);
+TnStatus WorkerWaitTask(Worker* self) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
+  TnStatus status;
+
+  WorkerLock(self);
+
+  if (self->State == WORKER_BUSY) WorkerSleepUntilStateChanges(self);
+
+  if (self->State == WORKER_DONE) {
+    status = TN_OK;
+  } else
+    status = TNSTATUS(TN_FSM_WRONG_STATE);
+
+  WorkerUnlock(self);
+
+  return status;
 }
 
-/* Main ^ Thread */
-TnStatus WorkerAssignTask(Worker* worker, WorkerTask task) {
-  assert(worker);
-  assert(task.Args);
-  assert(task.Function);
-  assert(task.Result);
+TnStatus WorkerFinishTask(Worker* self) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
+  TnStatus status;
 
-  pthread_mutex_lock(&worker->Mutex);
-  assert(worker->State == WORKER_FREE);
+  WorkerLock(self);
 
-  worker->Task = task;
-  worker->HasTask = 1;
-  worker->ResultBeenRead = 0;
+  status = WorkerFinishTaskAsync(self);
 
-  WorkerWakeUp(worker);
+  if (!TnStatusOk(status)) {
+    WorkerUnlock(self);
+    return status;
+  }
+
+  WorkerWakeUp(self);
+  WorkerSleepUntilStateChanges(self);
+
+  status = TN_OK;
+
+  WorkerUnlock(self);
+
+  return status;
 }
 
-/* Main ^ Thread */
-TnStatus WorkerFinish(Worker* worker) {
-  pthread_mutex_lock(&worker->Mutex);
-  assert(worker->State == WORKER_DONE);
+TnStatus WorkerStop(Worker* self) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
+  TnStatus status;
 
-  worker->ResultBeenRead = 1;
-  worker->HasTask = 0;
-  WorkerWakeUp(worker);
+  WorkerLock(self);
+
+  if (self->State != WORKER_STOPPED) {
+    self->DoStop = 1;
+    WorkerWakeUp(self);
+    WorkerSleepUntilStateChanges(self);
+    pthread_join(self->Thread, NULL);
+  }
+
+  WorkerUnlock(self);
+
+  return TN_OK;
 }
 
-/* Main ^ Thread */
-TnStatus WorkerStop(Worker* worker) {
-  assert(worker);
+TnStatus WorkerGetState(Worker* self, WorkerState* state) {
+  if (!self || !state) return TNSTATUS(TN_BAD_ARG_PTR);
 
-  pthread_mutex_lock(&worker->Mutex);
-  worker->Active = 0;
-  WorkerWakeUp(worker);
+  WorkerLock(self);
+  *state = self->State;
+  WorkerUnlock(self);
 
-  pthread_join(worker->Thread, NULL);
+  return TN_OK;
 }
 
-/* Main */
-TnStatus WorkerGetState(const Worker* worker, WorkerState* state) {
-  assert(worker);
-  assert(state);
-  *state = worker->State;
+TnStatus WorkerAssignTaskAsync(Worker* self, WorkerTask task) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
+
+  TnStatus status = ValidateTask(task);
+  if (!TnStatusOk(status)) return status;
+
+  if (self->State != WORKER_READY) return TNSTATUS(TN_FSM_WRONG_STATE);
+
+  self->Task = task;
+  self->DoStart = 1;
+  self->DoReset = 0;
+
+  return TN_OK;
+}
+
+TnStatus WorkerFinishTaskAsync(Worker* self) {
+  if (!self) return TNSTATUS(TN_BAD_ARG_PTR);
+
+  if (self->State != WORKER_DONE) return TNSTATUS(TN_FSM_WRONG_STATE);
+
+  self->DoReset = 1;
+  self->DoStart = 0;
+  self->NTask++;
 
   return TN_OK;
 }
 
 /* Thread */
-static void WorkerSleepUntil(Worker* worker, int* condition) {
-  assert(worker);
+static void WorkerSleep(Worker* self) {
+  assert(self);
+  pthread_cond_wait(&self->Cond, &self->Mutex);
+}
+
+/* Main */
+static void WorkerWakeUp(Worker* self) {
+  assert(self);
+  pthread_cond_signal(&self->Cond);
+}
+
+static void WorkerLock(Worker* self) {
+  assert(self);
+  pthread_mutex_lock(&self->Mutex);
+}
+
+static void WorkerUnlock(Worker* self) {
+  assert(self);
+  pthread_mutex_unlock(&self->Mutex);
+}
+
+static void WorkerSleepUntilCond(Worker* self, int* condition) {
+  assert(self);
   assert(condition);
-  while (worker->Active && !*condition) WorkerSleep(worker);
+
+  while (!self->DoStop && !*condition) WorkerSleep(self);
+}
+
+static void WorkerSleepUntilStateChanges(Worker* self) {
+  assert(self);
+  WorkerState state = self->State;
+  size_t nTask = self->NTask;
+  while (self->State != WORKER_STOPPED && self->State == state &&
+         self->NTask == nTask)
+    WorkerSleep(self);
+}
+
+static void WorkerAssignToCore(Worker* self) {
+  assert(self);
+
+  cpu_set_t cpuSet;
+  int numCores = sysconf(_SC_NPROCESSORS_ONLN);
+
+  int coreNumber = self->ID % numCores;
+
+  CPU_ZERO(&cpuSet);             // clears the cpuset
+  CPU_SET(coreNumber, &cpuSet);  // set CPU 2 on cpuset
+
+  sched_setaffinity(0, sizeof(cpuSet), &cpuSet);
 }
 
 /* Thread */
-static void WorkerExecute(void* workerArg) {
-  Worker* worker = (Worker*)workerArg;
+static void* WorkerLoop(void* selfPtr) {
+  assert(selfPtr);
+  Worker* self = (Worker*)selfPtr;
 
-  assert(worker);
+  WorkerAssignToCore(self);
 
-  void* args = worker->Task.Args;
-  void* result = worker->Task.Result;
-  WorkerFooT function = worker->Task.Function;
+  while (1) {
+    WorkerLock(self);
 
-  assert(result);
-  assert(function);
-  assert(args);
+    if (self->DoStop) {
+      self->State = WORKER_STOPPED;
+      WorkerWakeUp(self);
+      WorkerUnlock(self);
+      break;
+    }
 
-  pthread_mutex_unlock(&worker->Mutex);
-  function(args, result);
-  pthread_mutex_lock(&worker->Mutex);
-}
+    if (self->StateCallback.Function)
+      self->StateCallback.Function(self, self->StateCallback.Args);
 
-/* Thread */
-static void WorkerNotify(Worker* worker) {
-  assert(worker);
-
-  WorkerCallbackFooT function = worker->Callback.Function;
-  void* args = worker->Callback.Args;
-
-  assert(function);
-  assert(args);
-
-  function(worker, args);
-}
-
-/* Thread */
-static void* WorkerLoop(void* workerPtr) {
-  assert(workerPtr);
-  Worker* worker = (Worker*)workerPtr;
-
-  cpu_set_t cpuset;
-
-  int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
-
-  int cpu = worker->ID % num_cores;
-
-  CPU_ZERO(&cpuset);      // clears the cpuset
-  CPU_SET(cpu, &cpuset);  // set CPU 2 on cpuset
-
-  sched_setaffinity(0, sizeof(cpuset), &cpuset);
-
-  while (worker->Active) {
-    WorkerNotify(worker);
-
-    pthread_mutex_lock(&worker->Mutex);
-    switch (worker->State) {
-      case WORKER_FREE:
-        WorkerSleepUntil(worker, &worker->HasTask);
-        worker->State = WORKER_BUSY;
+    switch (self->State) {
+      case WORKER_STARTED:
+        self->State = WORKER_READY;
+        break;
+      case WORKER_READY:
+        WorkerWakeUp(self);
+        WorkerSleepUntilCond(self, &self->DoStart);
+        self->State = WORKER_BUSY;
         break;
       case WORKER_BUSY:
-        WorkerExecute(worker);
-        worker->State = WORKER_DONE;
+        WorkerWakeUp(self);
+        WorkerUnlock(self);
+        self->Task.Function(self->Task.Args, self->Task.Result);
+        WorkerLock(self);
+        self->State = WORKER_DONE;
         break;
       case WORKER_DONE:
-        WorkerSleepUntil(worker, &worker->ResultBeenRead);
-        worker->State = WORKER_FREE;
+        WorkerWakeUp(self);
+        WorkerSleepUntilCond(self, &self->DoReset);
+        self->State = WORKER_READY;
         break;
       default:
         assert(0);
     }
-    pthread_mutex_unlock(&worker->Mutex);
+
+    WorkerUnlock(self);
   }
+}
+
+static TnStatus ValidateTask(WorkerTask task) {
+  if (!task.Args || !task.Function || !task.Result)
+    return TNSTATUS(TN_BAD_ARG_PTR);
+  return TN_OK;
 }
