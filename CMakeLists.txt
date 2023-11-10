@@ -3,6 +3,8 @@ project(ThreadPool C CXX)
 
 include_directories(Inc/)
 
+set(CMAKE_C_FLAGS "-Werror")
+
 include(FetchContent)
 
 FetchContent_Declare(
